@@ -18,7 +18,7 @@
       </v-layer>
       
       <v-layer ref="layerRef">
-        <template v-for="(shape, index) in shapes" :key="shape.id">
+        <template v-for="(shape, index) in shapes" :key="shape.attrs.id || shape.id">
           <component
             :is="getShapeComponent(shape.type)"
             :config="getShapeConfig(shape)"
@@ -35,7 +35,7 @@
         </template>
       </v-layer>
       
-      <v-layer v-if="transformerRef" ref="transformerLayerRef">
+      <v-layer ref="transformerLayerRef">
         <v-transformer
           ref="transformerRef"
           :config="transformerConfig"
@@ -133,7 +133,7 @@ const getShapeComponent = (type: ToolType): string => {
 }
 
 const getShapeConfig = (shape: Shape): Record<string, any> => {
-  const config = { ...shape.attrs }
+  const config = { ...shape.attrs, id: shape.attrs.id || shape.id }
   if (shape.attrs.isSelected) config.draggable = true
   return config
 }
@@ -180,7 +180,15 @@ const handleMouseDown = (e: any) => {
   const tool = toolStore.state.currentTool
   const pos = getRelativePointerPosition()
   if (!pos) return
-  if (e.target === stage && tool !== 'select') deselectShape()
+  
+  const transformer = transformerRef.value?.getNode()
+  // 如果点击的是 transformer 或已选中的图形，不取消选择
+  if (e.target === transformer || (e.target !== stage && tool === 'select')) {
+    // 不取消选择，让 click 事件处理
+  } else if (e.target === stage && tool !== 'select') {
+    deselectShape()
+  }
+  
   if (tool === 'select' || tool === 'eraser') return
   isDrawing.value = true
   startPoint.value = pos
@@ -223,20 +231,39 @@ const handleClick = (e: any) => {
   const stage = stageRef.value?.getNode()
   if (!stage) return
 
+  let clickedShape = e.target
+  const transformer = transformerRef.value?.getNode()
+  
+  // 如果点击的是 transformer，获取其关联的节点
+  if (clickedShape === transformer && transformer?.nodes().length > 0) {
+    clickedShape = transformer.nodes()[0]
+  }
+  
+  // 如果点击的是空区域（stage），取消选择
+  if (clickedShape === stage || clickedShape === transformer) { 
+    deselectShape()
+    return
+  }
+  
+  // 获取点击的 shape 的 id
+  const clickedId = clickedShape?.attrs?.id || (typeof clickedShape?.id === 'function' ? clickedShape.id() : null)
+  console.log('Click:', clickedShape?.className, 'id:', clickedId)
+  console.log('Available shapes:', shapes.value.map(s => s.attrs.id || s.id))
+
   if (tool === 'eraser') {
-    const shape = e.target
-    if (shape && shape !== stage && shapes.value.length > 0) {
-      const shapeIndex = shapes.value.findIndex(s => stage.findOne('#' + s.id) === shape)
+    if (clickedShape && shapes.value.length > 0) {
+      const shapeIndex = shapes.value.findIndex(s => (s.attrs.id || s.id) === clickedId)
       if (shapeIndex !== -1) { shapes.value.splice(shapeIndex, 1); deselectShape() }
     }
     return
   }
 
   if (tool === 'select') {
-    const clickedShape = e.target
-    if (clickedShape === stage) { deselectShape(); return }
-    const shapeIndex = shapes.value.findIndex(s => stage.findOne('#' + s.id) === clickedShape)
-    if (shapeIndex !== -1) selectShape(shapeIndex)
+    const shapeIndex = shapes.value.findIndex(s => (s.attrs.id || s.id) === clickedId)
+    console.log('shapeIndex:', shapeIndex)
+    if (shapeIndex !== -1) {
+      selectShape(shapeIndex)
+    }
   }
 }
 
@@ -246,6 +273,7 @@ const updatePreviewShape = () => {
   const { strokeColor, fillColor, strokeWidth, fillEnabled } = toolStore.state
   const start = startPoint.value
   const end = currentPoint.value
+  const w = end.x - start.x, h = end.y - start.y
   let shape: Shape | null = null
 
   switch (tool) {
@@ -253,7 +281,6 @@ const updatePreviewShape = () => {
       shape = { id: 'preview', type: 'line', attrs: { points: [start.x, start.y, end.x, end.y], stroke: strokeColor, strokeWidth, lineCap: 'round' } }
       break
     case 'rect':
-      const w = end.x - start.x, h = end.y - start.y
       shape = { id: 'preview', type: 'rect', attrs: { x: w > 0 ? start.x : end.x, y: h > 0 ? start.y : end.y, width: Math.abs(w), height: Math.abs(h), stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
       break
     case 'circle':
@@ -290,30 +317,31 @@ const finishDrawing = () => {
 
   let shape: Shape | null = null
   const w = end.x - start.x, h = end.y - start.y
+  const shapeId = generateId()
 
   switch (tool) {
     case 'line':
-      shape = { id: generateId(), type: 'line', attrs: { id: generateId(), points: [start.x, start.y, end.x, end.y], stroke: strokeColor, strokeWidth, lineCap: 'round' } }
+      shape = { id: shapeId, type: 'line', attrs: { id: shapeId, points: [start.x, start.y, end.x, end.y], stroke: strokeColor, strokeWidth, lineCap: 'round' } }
       break
     case 'rect':
-      shape = { id: generateId(), type: 'rect', attrs: { id: generateId(), x: w > 0 ? start.x : end.x, y: h > 0 ? start.y : end.y, width: Math.abs(w), height: Math.abs(h), stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
+      shape = { id: shapeId, type: 'rect', attrs: { id: shapeId, x: w > 0 ? start.x : end.x, y: h > 0 ? start.y : end.y, width: Math.abs(w), height: Math.abs(h), stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
       break
     case 'circle':
       const r = Math.max(Math.abs(w), Math.abs(h)) / 2
-      shape = { id: generateId(), type: 'circle', attrs: { id: generateId(), x: (start.x + end.x) / 2, y: (start.y + end.y) / 2, radius: r, stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
+      shape = { id: shapeId, type: 'circle', attrs: { id: shapeId, x: (start.x + end.x) / 2, y: (start.y + end.y) / 2, radius: r, stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
       break
     case 'triangle':
-      shape = { id: generateId(), type: 'triangle', attrs: { id: generateId(), points: [start.x, start.y + Math.abs(h), end.x, end.y + Math.abs(h), start.x + Math.abs(w) / 2, start.y], stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent', closed: true } }
+      shape = { id: shapeId, type: 'triangle', attrs: { id: shapeId, points: [start.x, start.y + Math.abs(h), end.x, end.y + Math.abs(h), start.x + Math.abs(w) / 2, start.y], stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent', closed: true } }
       break
     case 'arrow':
-      shape = { id: generateId(), type: 'arrow', attrs: { id: generateId(), points: [start.x, start.y, end.x, end.y], stroke: strokeColor, strokeWidth, pointerLength: 10, pointerWidth: 10, fill: strokeColor } }
+      shape = { id: shapeId, type: 'arrow', attrs: { id: shapeId, points: [start.x, start.y, end.x, end.y], stroke: strokeColor, strokeWidth, pointerLength: 10, pointerWidth: 10, fill: strokeColor } }
       break
     case 'pen':
-      if (penPoints.value.length > 1) shape = { id: generateId(), type: 'pen', attrs: { id: generateId(), points: penPoints.value.flatMap(p => [p.x, p.y]), stroke: strokeColor, strokeWidth, lineCap: 'round', tension: 0.5 } }
+      if (penPoints.value.length > 1) shape = { id: shapeId, type: 'pen', attrs: { id: shapeId, points: penPoints.value.flatMap(p => [p.x, p.y]), stroke: strokeColor, strokeWidth, lineCap: 'round', tension: 0.5 } }
       break
     case 'polygon':
       const centerX = (start.x + end.x) / 2, centerY = (start.y + end.y) / 2, radius = Math.max(Math.abs(w), Math.abs(h)) / 2
-      if (radius > 0) shape = { id: generateId(), type: 'polygon', attrs: { id: generateId(), x: centerX, y: centerY, sides: toolStore.state.polygonSides, radius, stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
+      if (radius > 0) shape = { id: shapeId, type: 'polygon', attrs: { id: shapeId, x: centerX, y: centerY, sides: toolStore.state.polygonSides, radius, stroke: strokeColor, strokeWidth, fill: fillEnabled ? fillColor : 'transparent' } }
       break
   }
 
@@ -326,26 +354,79 @@ const resetDrawingState = () => {
 }
 
 const selectShape = (index: number) => {
-  if (selectedShapeIndex.value !== null && shapes.value[selectedShapeIndex.value]) shapes.value[selectedShapeIndex.value].attrs.isSelected = false
+  console.log('=== selectShape called ===', index)
+  const transformer = transformerRef.value?.getNode()
+  const transformerLayer = transformerLayerRef.value?.getNode()
+  const layer = layerRef.value?.getNode()
+  
+  console.log('transformer:', transformer, 'layer:', layer)
+  
+  // 先清空 transformer
+  if (transformer) { 
+    transformer.nodes([])
+    console.log('Cleared transformer')
+  }
+  
+  // 清除之前的选择状态
+  if (selectedShapeIndex.value !== null && shapes.value[selectedShapeIndex.value]) {
+    shapes.value[selectedShapeIndex.value].attrs.isSelected = false
+    console.log('Cleared previous selection')
+  }
+  
   selectedShapeIndex.value = index
   shapes.value[index].attrs.isSelected = true
+  console.log('Set isSelected = true for index:', index)
   window.dispatchEvent(new CustomEvent('whiteboard:shape-selected', { detail: shapes.value[index].attrs }))
-  nextTick(() => {
-    const stage = stageRef.value?.getNode()
-    const transformer = transformerRef.value?.getNode()
-    if (!stage || !transformer) return
-    const shapeNode = stage.findOne('#' + shapes.value[index].id)
-    if (shapeNode) { transformer.nodes([shapeNode]); transformer.getLayer()?.batchDraw() }
-  })
+  
+  const stage = stageRef.value?.getNode()
+  if (!stage || !transformer || !layer) {
+    console.log('Missing stage, transformer or layer')
+    return
+  }
+  
+  // 使用 attrs.id 来查找
+  const shapeId = shapes.value[index].attrs.id || shapes.value[index].id
+  console.log('Looking for shape with id:', shapeId)
+  
+  const shapeNode = stage.findOne('#' + shapeId)
+  console.log('Found shapeNode:', shapeNode, 'layer:', shapeNode?.getLayer())
+  
+  if (shapeNode) {
+    // 直接设置节点的 draggable
+    shapeNode.draggable(true)
+    transformer.nodes([shapeNode])
+    console.log('Added node to transformer, draggable:', shapeNode.draggable(), 'transformer nodes:', transformer.nodes())
+    // 刷新所有 layer
+    layer.batchDraw()
+    transformerLayer?.batchDraw()
+    console.log('Done batchDraw')
+  }
 }
 
 const deselectShape = () => {
-  if (selectedShapeIndex.value !== null && shapes.value[selectedShapeIndex.value]) shapes.value[selectedShapeIndex.value].attrs.isSelected = false
+  console.log('=== deselectShape called ===')
+  const stage = stageRef.value?.getNode()
+  
+  if (selectedShapeIndex.value !== null && shapes.value[selectedShapeIndex.value]) {
+    const shapeId = shapes.value[selectedShapeIndex.value].attrs.id || shapes.value[selectedShapeIndex.value].id
+    const shapeNode = stage?.findOne('#' + shapeId)
+    if (shapeNode) {
+      shapeNode.draggable(false)
+      console.log('Set draggable = false for:', shapeId)
+    }
+    shapes.value[selectedShapeIndex.value].attrs.isSelected = false
+    console.log('Set isSelected = false for index:', selectedShapeIndex.value)
+  }
   selectedShapeIndex.value = null
   window.dispatchEvent(new CustomEvent('whiteboard:shape-deselected'))
   nextTick(() => {
     const transformer = transformerRef.value?.getNode()
-    if (transformer) { transformer.nodes([]); transformer.getLayer()?.batchDraw() }
+    const transformerLayer = transformerLayerRef.value?.getNode()
+    if (transformer) { 
+      transformer.nodes([]); 
+      console.log('Cleared transformer in deselect')
+      transformer.getLayer()?.batchDraw() 
+    }
   })
 }
 
