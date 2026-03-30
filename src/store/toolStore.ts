@@ -1,6 +1,6 @@
 import { reactive, readonly } from 'vue'
 
-export type ToolType = 'select' | 'line' | 'rect' | 'circle' | 'triangle' | 'polygon' | 'arrow' | 'pen' | 'eraser' | 'text' | 'ruler' | 'protractor' | 'compass' | 'setsquare' | 'coordinate' | 'function' | 'numberLine' | 'geometryMark' | 'forceArrow' | 'pulley' | 'spring' | 'incline' | 'lever' | 'magnetic' | 'beaker' | 'flask' | 'testTube' | 'alcoholLamp' | 'molecule' | 'latex' | 'chemFormula'
+export type ToolType = 'select' | 'line' | 'rect' | 'circle' | 'triangle' | 'polygon' | 'arrow' | 'pen' | 'eraser' | 'text' | 'ruler' | 'protractor' | 'compass' | 'setsquare' | 'coordinate' | 'function' | 'numberLine' | 'geometryMark' | 'forceArrow' | 'pulley' | 'spring' | 'incline' | 'lever' | 'magnetic' | 'beaker' | 'flask' | 'testTube' | 'alcoholLamp' | 'molecule' | 'latex' | 'chemFormula' | 'connect'
 
 // 线型
 export type LineStyle = 'solid' | 'dashed' | 'dotted'

@@ -34,6 +34,38 @@
           />
         </template>
       </v-layer>
+
+      <v-layer ref="connectionLayerRef">
+        <v-line 
+          v-for="conn in connections" 
+          :key="conn.id" 
+          :config="getConnectionLineConfig(conn)" 
+        />
+        <v-line v-if="connectionPreview" :config="connectionPreview" />
+      </v-layer>
+
+      <v-layer ref="connectionPointsLayerRef">
+        <template v-if="showConnectionPoints">
+          <template v-for="shape in connectableShapes" :key="'cp-' + shape.id">
+            <v-circle
+              v-for="(point, pIndex) in shape.connectionPoints"
+              :key="'cp-' + shape.id + '-' + pIndex"
+              :config="{
+                x: point.x,
+                y: point.y,
+                radius: 8,
+                fill: point.hovered ? '#4a90d9' : '#FFFFFF',
+                stroke: '#4a90d9',
+                strokeWidth: 2,
+                name: 'connection-point-' + shape.id + '-' + pIndex
+              }"
+              @mouseenter="handleConnectionPointHover(shape.id, pIndex, true)"
+              @mouseleave="handleConnectionPointHover(shape.id, pIndex, false)"
+              @mousedown="handleConnectionPointMouseDown(shape.id, pIndex, $event)"
+            />
+          </template>
+        </template>
+      </v-layer>
       
       <v-layer ref="transformerLayerRef">
         <v-transformer
@@ -60,6 +92,27 @@ interface Shape {
 interface Point {
   x: number
   y: number
+}
+
+interface ConnectionPoint {
+  x: number
+  y: number
+  hovered: boolean
+}
+
+interface ConnectableShape {
+  id: string
+  connectionPoints: ConnectionPoint[]
+}
+
+interface Connection {
+  id: string
+  fromShapeId: string
+  fromPointIndex: number
+  toShapeId: string
+  toPointIndex: number
+  stroke: string
+  strokeWidth: number
 }
 
 const toolStore = useToolStore()
@@ -115,6 +168,16 @@ const previewShape = ref<Shape | null>(null)
 const penPoints = ref<Point[]>([])
 const compassState = ref<{ center: Point | null; radius: number; step: number }>({ center: null, radius: 0, step: 1 })
 
+const connections = ref<Connection[]>([])
+const connectionPreview = ref<any>(null)
+const showConnectionPoints = ref(false)
+const connectableShapes = ref<ConnectableShape[]>([])
+const connectingFrom = ref<{ shapeId: string; pointIndex: number } | null>(null)
+const currentHoveredPoint = ref<{ shapeId: string; pointIndex: number } | null>(null)
+
+const connectionLayerRef = ref<any>(null)
+const connectionPointsLayerRef = ref<any>(null)
+
 const generateId = () => `shape_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
 const getShapeComponent = (type: ToolType): string => {
@@ -127,7 +190,8 @@ const getShapeComponent = (type: ToolType): string => {
     forceArrow: 'v-group', pulley: 'v-group', spring: 'v-group',
     incline: 'v-group', lever: 'v-group', magnetic: 'v-group',
     beaker: 'v-group', flask: 'v-group', testTube: 'v-group',
-    alcoholLamp: 'v-group', molecule: 'v-group', latex: 'v-group', chemFormula: 'v-group'
+    alcoholLamp: 'v-group', molecule: 'v-group', latex: 'v-group', chemFormula: 'v-group',
+    connect: 'v-line'
   }
   return map[type] || 'v-rect'
 }
@@ -136,6 +200,249 @@ const getShapeConfig = (shape: Shape): Record<string, any> => {
   const config = { ...shape.attrs, id: shape.attrs.id || shape.id }
   if (shape.attrs.isSelected) config.draggable = true
   return config
+}
+
+const getConnectableShapeTypes = (): ToolType[] => {
+  return ['rect', 'circle', 'triangle', 'polygon', 'line', 'arrow']
+}
+
+const getConnectionPointsForShape = (shape: Shape): ConnectionPoint[] => {
+  const points: ConnectionPoint[] = []
+  const attrs = shape.attrs
+  const stage = stageRef.value?.getNode()
+  const shapeId = attrs.id || shape.id
+  const node = stage?.findOne('#' + shapeId)
+  
+  switch (shape.type) {
+    case 'rect':
+      let rx = attrs.x || 0
+      let ry = attrs.y || 0
+      let rw = attrs.width || 0
+      let rh = attrs.height || 0
+      
+      if (node) {
+        rx = node.x()
+        ry = node.y()
+        rw = node.width() * (node.scaleX() || 1)
+        rh = node.height() * (node.scaleY() || 1)
+      }
+      
+      points.push(
+        { x: rx + rw / 2, y: ry, hovered: false },
+        { x: rx + rw, y: ry + rh / 2, hovered: false },
+        { x: rx + rw / 2, y: ry + rh, hovered: false },
+        { x: rx, y: ry + rh / 2, hovered: false }
+      )
+      break
+    case 'circle':
+      let cx = attrs.x || 0
+      let cy = attrs.y || 0
+      let cr = attrs.radius || 0
+      
+      if (node) {
+        cx = node.x()
+        cy = node.y()
+        cr = node.radius() * (node.scaleX() || 1)
+      }
+      
+      points.push(
+        { x: cx, y: cy - cr, hovered: false },
+        { x: cx + cr, y: cy, hovered: false },
+        { x: cx, y: cy + cr, hovered: false },
+        { x: cx - cr, y: cy, hovered: false }
+      )
+      break
+    case 'triangle':
+      if (attrs.points && attrs.points.length >= 6) {
+        const p = attrs.points
+        points.push(
+          { x: (p[0] + p[2]) / 2, y: (p[1] + p[3]) / 2, hovered: false },
+          { x: (p[2] + p[4]) / 2, y: (p[3] + p[5]) / 2, hovered: false },
+          { x: (p[4] + p[0]) / 2, y: (p[5] + p[1]) / 2, hovered: false }
+        )
+      }
+      break
+    case 'polygon':
+      let px = attrs.x || 0
+      let py = attrs.y || 0
+      let pr = attrs.radius || 0
+      const sides = attrs.sides || 5
+      
+      if (node) {
+        px = node.x()
+        py = node.y()
+        pr = node.radius() * (node.scaleX() || 1)
+      }
+      
+      for (let i = 0; i < sides; i++) {
+        const angle = (i * 2 * Math.PI / sides) - Math.PI / 2
+        points.push({
+          x: px + pr * Math.cos(angle),
+          y: py + pr * Math.sin(angle),
+          hovered: false
+        })
+      }
+      break
+    case 'line':
+    case 'arrow':
+      if (attrs.points && attrs.points.length >= 4) {
+        points.push(
+          { x: attrs.points[0], y: attrs.points[1], hovered: false },
+          { x: attrs.points[2], y: attrs.points[3], hovered: false }
+        )
+      }
+      break
+  }
+  
+  return points
+}
+
+const updateConnectableShapes = () => {
+  const connectableTypes = getConnectableShapeTypes()
+  connectableShapes.value = shapes.value
+    .filter(shape => connectableTypes.includes(shape.type))
+    .map(shape => ({
+      id: shape.attrs.id || shape.id,
+      connectionPoints: getConnectionPointsForShape(shape)
+    }))
+  console.log('updateConnectableShapes:', connectableShapes.value.length, 'shapes')
+  console.log('connectableShapes:', connectableShapes.value.map(s => ({ id: s.id, points: s.connectionPoints.length })))
+}
+
+const getConnectionLineConfig = (conn: Connection): any => {
+  const fromShape = connectableShapes.value.find(s => s.id === conn.fromShapeId)
+  const toShape = connectableShapes.value.find(s => s.id === conn.toShapeId)
+  
+  if (!fromShape || !toShape) {
+    console.warn('getConnectionLineConfig: Missing shape', conn.id, 'from:', conn.fromShapeId, 'to:', conn.toShapeId)
+    return { points: [], stroke: conn.stroke, strokeWidth: conn.strokeWidth }
+  }
+  
+  const fromPoint = fromShape.connectionPoints[conn.fromPointIndex]
+  const toPoint = toShape.connectionPoints[conn.toPointIndex]
+  
+  if (!fromPoint || !toPoint) {
+    console.warn('getConnectionLineConfig: Missing point', 'fromIndex:', conn.fromPointIndex, 'toIndex:', conn.toPointIndex)
+    return { points: [], stroke: conn.stroke, strokeWidth: conn.strokeWidth }
+  }
+  
+  return {
+    id: conn.id,
+    points: [fromPoint.x, fromPoint.y, toPoint.x, toPoint.y],
+    stroke: conn.stroke,
+    strokeWidth: conn.strokeWidth,
+    lineCap: 'round',
+    lineJoin: 'round'
+  }
+}
+
+const updateConnectionLines = () => {
+  updateConnectableShapes()
+  const layer = connectionLayerRef.value?.getNode()
+  if (layer) {
+    layer.batchDraw()
+  }
+}
+
+let isOnConnectionPoint = false
+
+const handleConnectionPointHover = (shapeId: string, pointIndex: number, isHovered: boolean) => {
+  const shape = connectableShapes.value.find(s => s.id === shapeId)
+  if (shape && shape.connectionPoints[pointIndex]) {
+    shape.connectionPoints[pointIndex].hovered = isHovered
+  }
+  isOnConnectionPoint = isHovered
+  if (isHovered) {
+    currentHoveredPoint.value = { shapeId, pointIndex }
+  } else {
+    currentHoveredPoint.value = null
+  }
+}
+
+const handleConnectionPointMouseDown = (shapeId: string, pointIndex: number, e: any) => {
+  e.evt.stopPropagation()
+  isOnConnectionPoint = true
+  
+  console.log('=== handleConnectionPointMouseDown ===')
+  console.log('shapeId:', shapeId, 'pointIndex:', pointIndex)
+  console.log('connectingFrom before:', JSON.stringify(connectingFrom.value))
+  
+  if (connectingFrom.value === null) {
+    connectingFrom.value = { shapeId, pointIndex }
+    const shape = connectableShapes.value.find(s => s.id === shapeId)
+    if (shape) {
+      const point = shape.connectionPoints[pointIndex]
+      connectionPreview.value = {
+        points: [point.x, point.y, point.x, point.y],
+        stroke: toolStore.state.strokeColor,
+        strokeWidth: toolStore.state.strokeWidth,
+        dash: [5, 5]
+      }
+      console.log('Started connection from:', point)
+    }
+  } else {
+    console.log('Already connecting from another point, canceling previous connection')
+    // 如果已经在连接过程中，点击另一个连接点会取消之前的连接并开始新的连接
+    connectingFrom.value = { shapeId, pointIndex }
+    const shape = connectableShapes.value.find(s => s.id === shapeId)
+    if (shape) {
+      const point = shape.connectionPoints[pointIndex]
+      connectionPreview.value = {
+        points: [point.x, point.y, point.x, point.y],
+        stroke: toolStore.state.strokeColor,
+        strokeWidth: toolStore.state.strokeWidth,
+        dash: [5, 5]
+      }
+      console.log('Started new connection from:', point)
+    }
+  }
+  console.log('connectingFrom after:', JSON.stringify(connectingFrom.value))
+}
+
+const handleConnectionMouseMove = () => {
+  if (connectingFrom.value && connectionPreview.value) {
+    const pos = getRelativePointerPosition()
+    if (pos) {
+      const shape = connectableShapes.value.find(s => s.id === connectingFrom.value!.shapeId)
+      if (shape) {
+        const point = shape.connectionPoints[connectingFrom.value.pointIndex]
+        connectionPreview.value.points = [point.x, point.y, pos.x, pos.y]
+      }
+    }
+  }
+}
+
+const handleConnectionMouseUp = () => {
+  if (connectingFrom.value) {
+    // 如果当前悬停在连接点上，自动创建连接
+    if (currentHoveredPoint.value && 
+        (currentHoveredPoint.value.shapeId !== connectingFrom.value.shapeId || 
+         currentHoveredPoint.value.pointIndex !== connectingFrom.value.pointIndex)) {
+      const newConnection: Connection = {
+        id: generateId(),
+        fromShapeId: connectingFrom.value.shapeId,
+        fromPointIndex: connectingFrom.value.pointIndex,
+        toShapeId: currentHoveredPoint.value.shapeId,
+        toPointIndex: currentHoveredPoint.value.pointIndex,
+        stroke: toolStore.state.strokeColor,
+        strokeWidth: toolStore.state.strokeWidth
+      }
+      connections.value.push(newConnection)
+      
+      nextTick(() => {
+        updateConnectableShapes()
+        const layer = connectionLayerRef.value?.getNode()
+        if (layer) {
+          layer.batchDraw()
+        }
+      })
+      
+      historyStore.saveState(shapes.value)
+    }
+    connectingFrom.value = null
+    connectionPreview.value = null
+    currentHoveredPoint.value = null
+  }
 }
 
 const updateSize = () => {
@@ -182,11 +489,16 @@ const handleMouseDown = (e: any) => {
   if (!pos) return
   
   const transformer = transformerRef.value?.getNode()
-  // 如果点击的是 transformer 或已选中的图形，不取消选择
   if (e.target === transformer || (e.target !== stage && tool === 'select')) {
-    // 不取消选择，让 click 事件处理
   } else if (e.target === stage && tool !== 'select') {
-    deselectShape()
+    if (!isOnConnectionPoint) {
+      deselectShape()
+    }
+  }
+  
+  if (tool === 'connect') {
+    isOnConnectionPoint = false
+    return
   }
   
   if (tool === 'select' || tool === 'eraser') return
@@ -196,12 +508,17 @@ const handleMouseDown = (e: any) => {
   updatePreviewShape()
 }
 
-const handleMouseMove = () => {
+const handleMouseMove = (e: any) => {
   const tool = toolStore.state.currentTool
   const stage = stageRef.value?.getNode()
   if (!stage) return
   const pos = getRelativePointerPosition()
   if (!pos) return
+
+  if (tool === 'connect') {
+    handleConnectionMouseMove()
+    return
+  }
 
   if (tool === 'eraser') {
     const shape = e?.target
@@ -219,6 +536,12 @@ const handleMouseMove = () => {
 
 const handleMouseUp = () => {
   const tool = toolStore.state.currentTool
+  if (tool === 'connect') {
+    // 无论是否在连接点上，都处理连接创建
+    handleConnectionMouseUp()
+    isOnConnectionPoint = false
+    return
+  }
   if (tool === 'eraser') return
   if (!isDrawing.value || !startPoint.value || !currentPoint.value) {
     isDrawing.value = false; return
@@ -234,18 +557,15 @@ const handleClick = (e: any) => {
   let clickedShape = e.target
   const transformer = transformerRef.value?.getNode()
   
-  // 如果点击的是 transformer，获取其关联的节点
   if (clickedShape === transformer && transformer?.nodes().length > 0) {
     clickedShape = transformer.nodes()[0]
   }
   
-  // 如果点击的是空区域（stage），取消选择
   if (clickedShape === stage || clickedShape === transformer) { 
     deselectShape()
     return
   }
   
-  // 获取点击的 shape 的 id
   const clickedId = clickedShape?.attrs?.id || (typeof clickedShape?.id === 'function' ? clickedShape.id() : null)
   console.log('Click:', clickedShape?.className, 'id:', clickedId)
   console.log('Available shapes:', shapes.value.map(s => s.attrs.id || s.id))
@@ -255,6 +575,10 @@ const handleClick = (e: any) => {
       const shapeIndex = shapes.value.findIndex(s => (s.attrs.id || s.id) === clickedId)
       if (shapeIndex !== -1) { shapes.value.splice(shapeIndex, 1); deselectShape() }
     }
+    return
+  }
+
+  if (tool === 'connect') {
     return
   }
 
@@ -345,7 +669,7 @@ const finishDrawing = () => {
       break
   }
 
-  if (shape) { shapes.value.push(shape); historyStore.saveState(shapes.value); pageStore.setCurrentPageShapes([...shapes.value]) }
+  if (shape) { shapes.value.push(shape); historyStore.saveState(shapes.value); pageStore.setCurrentPageShapes([...shapes.value]); updateConnectableShapes() }
   resetDrawingState()
 }
 
@@ -430,8 +754,39 @@ const deselectShape = () => {
   })
 }
 
-const handleShapeDragEnd = () => { historyStore.saveState(shapes.value) }
-const handleTransformEnd = () => { historyStore.saveState(shapes.value) }
+const handleShapeDragEnd = (e: any, index: number) => {
+  const shape = shapes.value[index]
+  const node = e.target
+  
+  if (shape && node) {
+    if (shape.type === 'rect') {
+      shape.attrs.x = node.x()
+      shape.attrs.y = node.y()
+    } else if (shape.type === 'circle' || shape.type === 'polygon') {
+      shape.attrs.x = node.x()
+      shape.attrs.y = node.y()
+    }
+    console.log('Shape dragged, new position:', shape.attrs.x, shape.attrs.y)
+  }
+  
+  historyStore.saveState(shapes.value)
+  updateConnectableShapes()
+  
+  nextTick(() => {
+    const layer = connectionLayerRef.value?.getNode()
+    if (layer) layer.batchDraw()
+  })
+}
+
+const handleTransformEnd = () => {
+  historyStore.saveState(shapes.value)
+  updateConnectableShapes()
+  
+  nextTick(() => {
+    const layer = connectionLayerRef.value?.getNode()
+    if (layer) layer.batchDraw()
+  })
+}
 
 const deleteSelectedShape = () => {
   if (selectedShapeIndex.value !== null) { shapes.value.splice(selectedShapeIndex.value, 1); deselectShape(); historyStore.saveState(shapes.value) }
@@ -543,6 +898,7 @@ const handleKeyDown = (e: KeyboardEvent) => {
 
   switch (key) {
     case 'v': toolStore.setTool('select'); break
+    case 'c': toolStore.setTool('connect'); break
     case 'l': toolStore.setTool('line'); break
     case 'r': toolStore.setTool('rect'); break
     case 'e': toolStore.setTool('circle'); break
@@ -618,7 +974,30 @@ watch(() => toolStore.state.currentTool, (newTool) => {
   if (newTool !== 'select') deselectShape()
   const stage = stageRef.value?.getNode()
   if (stage) stage.draggable(newTool === 'select')
+  
+  if (newTool === 'connect') {
+    console.log('Switched to connect tool')
+    showConnectionPoints.value = true
+    nextTick(() => {
+      updateConnectableShapes()
+      console.log('connectableShapes updated:', connectableShapes.value.length)
+    })
+  } else {
+    showConnectionPoints.value = false
+    connectingFrom.value = null
+    connectionPreview.value = null
+  }
 })
+
+watch(shapes, () => {
+  if (showConnectionPoints.value || connections.value.length > 0) {
+    updateConnectableShapes()
+    nextTick(() => {
+      const layer = connectionLayerRef.value?.getNode()
+      if (layer) layer.batchDraw()
+    })
+  }
+}, { deep: true })
 
 onMounted(() => {
   loadCurrentPageShapes()

@@ -62,6 +62,7 @@ const activeRulerIndex = ref<number | null>(null)
 
 const drawingTools: { type: ToolType; icon: string; name: string; title: string; color: string }[] = [
   { type: 'select', icon: '👆', name: '选择', title: '选择 (V)', color: '#2196F3' },
+  { type: 'connect', icon: '🔗', name: '连接', title: '连接 (C)', color: '#E91E63' },
   { type: 'line', icon: '📏', name: '直线', title: '直线 (L)', color: '#4CAF50' },
   { type: 'rect', icon: '⬜', name: '矩形', title: '矩形 (R)', color: '#9C27B0' },
   { type: 'circle', icon: '⭕', name: '椭圆', title: '椭圆 (E)', color: '#FF9800' },
